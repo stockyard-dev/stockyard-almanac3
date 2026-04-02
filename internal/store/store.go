@@ -1,13 +1,23 @@
 package store
-import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
-type DB struct{*sql.DB}
-type Table struct{ID int64 `json:"id"`;Database string `json:"database"`;Name string `json:"name"`;Description string `json:"description"`;Owner string `json:"owner"`;RowCount int64 `json:"row_count"`;CreatedAt time.Time `json:"created_at"`}
-type Column struct{ID int64 `json:"id"`;TableID int64 `json:"table_id"`;Name string `json:"name"`;DataType string `json:"data_type"`;Description string `json:"description"`;Nullable bool `json:"nullable"`;IsPK bool `json:"is_pk"`;IsFK bool `json:"is_fk"`;FKRef string `json:"fk_ref"`;CreatedAt time.Time `json:"created_at"`}
-func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"almanac3.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
-func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS tables(id INTEGER PRIMARY KEY AUTOINCREMENT,database_name TEXT NOT NULL,name TEXT NOT NULL,description TEXT DEFAULT '',owner TEXT DEFAULT '',row_count INTEGER DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP);CREATE TABLE IF NOT EXISTS columns(id INTEGER PRIMARY KEY AUTOINCREMENT,table_id INTEGER NOT NULL,name TEXT NOT NULL,data_type TEXT DEFAULT '',description TEXT DEFAULT '',nullable INTEGER DEFAULT 1,is_pk INTEGER DEFAULT 0,is_fk INTEGER DEFAULT 0,fk_ref TEXT DEFAULT '',created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`)}
-func(db *DB)CreateTable(t *Table)error{res,err:=db.Exec(`INSERT INTO tables(database_name,name,description,owner,row_count)VALUES(?,?,?,?,?)`,t.Database,t.Name,t.Description,t.Owner,t.RowCount);if err!=nil{return err};t.ID,_=res.LastInsertId();return nil}
-func(db *DB)ListTables(database string)([]Table,error){q:=`SELECT id,database_name,name,description,owner,row_count,created_at FROM tables WHERE 1=1`;args:=[]interface{}{};if database!=""{q+=` AND database_name=?`;args=append(args,database)};q+=` ORDER BY database_name,name`;rows,err:=db.Query(q,args...);if err!=nil{return nil,err};defer rows.Close();var out[]Table;for rows.Next(){var t Table;rows.Scan(&t.ID,&t.Database,&t.Name,&t.Description,&t.Owner,&t.RowCount,&t.CreatedAt);out=append(out,t)};return out,nil}
-func(db *DB)AddColumn(c *Column)error{pk:=0;if c.IsPK{pk=1};fk:=0;if c.IsFK{fk=1};nl:=1;if !c.Nullable{nl=0};res,err:=db.Exec(`INSERT INTO columns(table_id,name,data_type,description,nullable,is_pk,is_fk,fk_ref)VALUES(?,?,?,?,?,?,?,?)`,c.TableID,c.Name,c.DataType,c.Description,nl,pk,fk,c.FKRef);if err!=nil{return err};c.ID,_=res.LastInsertId();return nil}
-func(db *DB)ListColumns(tableID int64)([]Column,error){rows,_:=db.Query(`SELECT id,table_id,name,data_type,description,nullable,is_pk,is_fk,fk_ref,created_at FROM columns WHERE table_id=? ORDER BY is_pk DESC,name`,tableID);defer rows.Close();var out[]Column;for rows.Next(){var c Column;var nl,pk,fk int;rows.Scan(&c.ID,&c.TableID,&c.Name,&c.DataType,&c.Description,&nl,&pk,&fk,&c.FKRef,&c.CreatedAt);c.Nullable=nl==1;c.IsPK=pk==1;c.IsFK=fk==1;out=append(out,c)};return out,nil}
-func(db *DB)Delete(id int64){db.Exec(`DELETE FROM columns WHERE table_id=?`,id);db.Exec(`DELETE FROM tables WHERE id=?`,id)}
-func(db *DB)Stats()(map[string]interface{},error){var tables,columns int;db.QueryRow(`SELECT COUNT(*) FROM tables`).Scan(&tables);db.QueryRow(`SELECT COUNT(*) FROM columns`).Scan(&columns);return map[string]interface{}{"tables":tables,"columns":columns},nil}
+import ("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{db *sql.DB}
+type Item struct{
+	ID string `json:"id"`
+	Name string `json:"name"`
+	Description string `json:"description"`
+	Status string `json:"status"`
+	Category string `json:"category"`
+	Tags string `json:"tags"`
+	CreatedAt string `json:"created_at"`
+}
+func Open(d string)(*DB,error){if err:=os.MkdirAll(d,0755);err!=nil{return nil,err};db,err:=sql.Open("sqlite",filepath.Join(d,"almanac3.db")+"?_journal_mode=WAL&_busy_timeout=5000");if err!=nil{return nil,err}
+db.Exec(`CREATE TABLE IF NOT EXISTS items(id TEXT PRIMARY KEY,name TEXT NOT NULL,description TEXT DEFAULT '',status TEXT DEFAULT 'active',category TEXT DEFAULT '',tags TEXT DEFAULT '',created_at TEXT DEFAULT(datetime('now')))`)
+return &DB{db:db},nil}
+func(d *DB)Close()error{return d.db.Close()}
+func genID()string{return fmt.Sprintf("%d",time.Now().UnixNano())}
+func now()string{return time.Now().UTC().Format(time.RFC3339)}
+func(d *DB)Create(e *Item)error{e.ID=genID();e.CreatedAt=now();_,err:=d.db.Exec(`INSERT INTO items(id,name,description,status,category,tags,created_at)VALUES(?,?,?,?,?,?,?)`,e.ID,e.Name,e.Description,e.Status,e.Category,e.Tags,e.CreatedAt);return err}
+func(d *DB)Get(id string)*Item{var e Item;if d.db.QueryRow(`SELECT id,name,description,status,category,tags,created_at FROM items WHERE id=?`,id).Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt)!=nil{return nil};return &e}
+func(d *DB)List()[]Item{rows,_:=d.db.Query(`SELECT id,name,description,status,category,tags,created_at FROM items ORDER BY created_at DESC`);if rows==nil{return nil};defer rows.Close();var o []Item;for rows.Next(){var e Item;rows.Scan(&e.ID,&e.Name,&e.Description,&e.Status,&e.Category,&e.Tags,&e.CreatedAt);o=append(o,e)};return o}
+func(d *DB)Delete(id string)error{_,err:=d.db.Exec(`DELETE FROM items WHERE id=?`,id);return err}
+func(d *DB)Count()int{var n int;d.db.QueryRow(`SELECT COUNT(*) FROM items`).Scan(&n);return n}
